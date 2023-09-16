@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import useReactRouter from 'use-react-router';
 import throttle from 'lodash/throttle';
+import { useHistory } from 'react-router-dom';
 
 let activeHash: string | null = null;
 const listeners = new Set<(activeHash: string | null) => void>();
@@ -32,7 +32,7 @@ export const useActiveHash = () => {
 };
 
 export const useHeadingRouteUpdates = (headingHashes: Array<string>) => {
-  const { location } = useReactRouter();
+  const { location } = useHistory();
 
   updateActiveRoute(location.hash.substring(1));
 
