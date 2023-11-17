@@ -5,12 +5,11 @@ import { normalizePath } from 'vite';
 import outdent from 'outdent';
 import {
   cssFileFilter,
-  processVanillaFile,
-  compile,
+  createCompiler,
   IdentifierOption,
   getPackageInfo,
-  CompileOptions,
   transform,
+  Compiler,
 } from '@vanilla-extract/integration';
 import { PostCSSConfigResult, resolvePostcssConfig } from './postcss';
 
@@ -23,17 +22,16 @@ const virtualExtJs = '.vanilla.js';
 interface Options {
   identifiers?: IdentifierOption;
   emitCssInSsr?: boolean;
-  esbuildOptions?: CompileOptions['esbuildOptions'];
 }
 export function vanillaExtractPlugin({
   identifiers,
   emitCssInSsr,
-  esbuildOptions,
 }: Options = {}): Plugin {
   let config: ResolvedConfig;
   let server: ViteDevServer;
   let postCssConfig: PostCSSConfigResult | null;
-  const cssMap = new Map<string, string>();
+  let compiler: Compiler;
+  // const cssMap = new Map<string, string>();
 
   const hasEmitCssOverride = typeof emitCssInSsr === 'boolean';
   let resolvedEmitCssInSsr: boolean = hasEmitCssOverride
@@ -49,6 +47,9 @@ export function vanillaExtractPlugin({
     enforce: 'pre',
     configureServer(_server) {
       server = _server;
+    },
+    async buildEnd() {
+      await compiler.close();
     },
     config(_userConfig, env) {
       const include =
@@ -68,6 +69,22 @@ export function vanillaExtractPlugin({
     async configResolved(resolvedConfig) {
       config = resolvedConfig;
       packageName = getPackageInfo(config.root).name;
+
+      compiler = createCompiler({
+        root: resolvedConfig.root,
+        identifiers,
+        cssImportSpecifier: (filePath: string) =>
+          // not sure about the config.build.ssr
+          `${filePath}${
+            config.command === 'build' ||
+            (config.build.ssr && resolvedEmitCssInSsr)
+              ? virtualExtCss
+              : virtualExtJs
+          }`,
+
+        // TODO: Eventually pass through vite plugins, but filter out VE plugin so we don't
+        // infinitely recurse
+      });
 
       if (config.command === 'serve') {
         postCssConfig = await resolvePostcssConfig(config);
@@ -95,26 +112,36 @@ export function vanillaExtractPlugin({
 
       // Absolute paths seem to occur often in monorepos, where files are
       // imported from outside the config root.
-      const absoluteId = source.startsWith(config.root)
-        ? source
-        : getAbsoluteVirtualFileId(validId);
+      // const absoluteId = source.startsWith(config.root)
+      //   ? source
+      //   : getAbsoluteVirtualFileId(validId);
+      //
 
+      console.log({ validId });
+      const moduleId = validId.split(/(\.vanilla\.js|\.vanilla\.css)/)[0];
       // There should always be an entry in the `cssMap` here.
       // The only valid scenario for a missing one is if someone had written
       // a file in their app using the .vanilla.js/.vanilla.css extension
-      if (cssMap.has(absoluteId)) {
+      console.log({ moduleId });
+      try {
+        compiler.getCssForFile(moduleId);
+        console.log({ loaded: moduleId });
         // Keep the original query string for HMR.
-        return absoluteId + (query ? `?${query}` : '');
+        return validId + (query ? `?${query}` : '');
+      } catch {
+        //ignore
       }
     },
     load(id) {
       const [validId] = id.split('?');
 
-      if (!cssMap.has(validId)) {
+      const moduleId = validId.split(/(\.vanilla\.js|\.vanilla\.css)/)[0];
+      let css: string;
+      try {
+        css = compiler.getCssForFile(moduleId).css;
+      } catch {
         return;
       }
-
-      const css = cssMap.get(validId);
 
       if (typeof css !== 'string') {
         return;
@@ -169,12 +196,8 @@ export function vanillaExtractPlugin({
         });
       }
 
-      const { source, watchFiles } = await compile({
-        filePath: validId,
-        cwd: config.root,
-        esbuildOptions,
-        identOption,
-      });
+      const { source, watchFiles } = await compiler.processVanillaFile(validId);
+      // const absoluteId = getAbsoluteVirtualFileId(config.root);
 
       for (const file of watchFiles) {
         // In start mode, we need to prevent the file from rewatching itself.
@@ -184,69 +207,106 @@ export function vanillaExtractPlugin({
         }
       }
 
-      const output = await processVanillaFile({
-        source,
-        filePath: validId,
-        identOption,
-        serializeVirtualCssPath: async ({ fileScope, source }) => {
-          const rootRelativeId = `${fileScope.filePath}${
-            config.command === 'build' || (ssr && resolvedEmitCssInSsr)
-              ? virtualExtCss
-              : virtualExtJs
-          }`;
-          const absoluteId = getAbsoluteVirtualFileId(rootRelativeId);
+      // let cssSource = compiler.getCssForFile(validId).css;
 
-          let cssSource = source;
+      // if (postCssConfig) {
+      //   const postCssResult = await (await import('postcss'))
+      //     .default(postCssConfig.plugins)
+      //     .process(source, {
+      //       ...postCssConfig.options,
+      //       from: undefined,
+      //       map: false,
+      //     });
+      //
+      //   cssSource = postCssResult.css;
+      // }
 
-          if (postCssConfig) {
-            const postCssResult = await (await import('postcss'))
-              .default(postCssConfig.plugins)
-              .process(source, {
-                ...postCssConfig.options,
-                from: undefined,
-                map: false,
-              });
+      // if (server && cssMap.has(validId) && cssMap.get(validId) !== source) {
+      //   const { moduleGraph } = server;
+      //   const modules = Array.from(moduleGraph.getModulesByFile(validId) || []);
+      //
+      //   for (const module of modules) {
+      //     if (module) {
+      //       moduleGraph.invalidateModule(module);
+      //
+      //       // Vite uses this timestamp to add `?t=` query string automatically for HMR.
+      //       module.lastHMRTimestamp =
+      //         (module as any).lastInvalidationTimestamp || Date.now();
+      //     }
+      //   }
+      //
+      //   server.ws.send({
+      //     type: 'custom',
+      //     event: styleUpdateEvent(validId),
+      //     data: cssSource,
+      //   });
+      // }
 
-            cssSource = postCssResult.css;
-          }
+      // cssMap.set(absoluteId, cssSource);
 
-          if (
-            server &&
-            cssMap.has(absoluteId) &&
-            cssMap.get(absoluteId) !== source
-          ) {
-            const { moduleGraph } = server;
-            const modules = Array.from(
-              moduleGraph.getModulesByFile(absoluteId) || [],
-            );
-
-            for (const module of modules) {
-              if (module) {
-                moduleGraph.invalidateModule(module);
-
-                // Vite uses this timestamp to add `?t=` query string automatically for HMR.
-                module.lastHMRTimestamp =
-                  (module as any).lastInvalidationTimestamp || Date.now();
-              }
-            }
-
-            server.ws.send({
-              type: 'custom',
-              event: styleUpdateEvent(absoluteId),
-              data: cssSource,
-            });
-          }
-
-          cssMap.set(absoluteId, cssSource);
-
-          // We use the root relative id here to ensure file contents (content-hashes)
-          // are consistent across build machines
-          return `import "${rootRelativeId}";`;
-        },
-      });
+      // const output = await compiler.processVanillaFile({
+      //   source,
+      //   filePath: validId,
+      //   identOption,
+      //   serializeVirtualCssPath: async ({ fileScope, source }) => {
+      //     const rootRelativeId = `${fileScope.filePath}${
+      //       config.command === 'build' || (ssr && resolvedEmitCssInSsr)
+      //         ? virtualExtCss
+      //         : virtualExtJs
+      //     }`;
+      //     const absoluteId = getAbsoluteVirtualFileId(rootRelativeId);
+      //
+      //     let cssSource = source;
+      //
+      //     if (postCssConfig) {
+      //       const postCssResult = await (await import('postcss'))
+      //         .default(postCssConfig.plugins)
+      //         .process(source, {
+      //           ...postCssConfig.options,
+      //           from: undefined,
+      //           map: false,
+      //         });
+      //
+      //       cssSource = postCssResult.css;
+      //     }
+      //
+      //     if (
+      //       server &&
+      //       cssMap.has(absoluteId) &&
+      //       cssMap.get(absoluteId) !== source
+      //     ) {
+      //       const { moduleGraph } = server;
+      //       const modules = Array.from(
+      //         moduleGraph.getModulesByFile(absoluteId) || [],
+      //       );
+      //
+      //       for (const module of modules) {
+      //         if (module) {
+      //           moduleGraph.invalidateModule(module);
+      //
+      //           // Vite uses this timestamp to add `?t=` query string automatically for HMR.
+      //           module.lastHMRTimestamp =
+      //             (module as any).lastInvalidationTimestamp || Date.now();
+      //         }
+      //       }
+      //
+      //       server.ws.send({
+      //         type: 'custom',
+      //         event: styleUpdateEvent(absoluteId),
+      //         data: cssSource,
+      //       });
+      //     }
+      //
+      //     cssMap.set(absoluteId, cssSource);
+      //
+      //     // We use the root relative id here to ensure file contents (content-hashes)
+      //     // are consistent across build machines
+      //     return `import "${rootRelativeId}";`;
+      //   },
+      // });
 
       return {
-        code: output,
+        code: source,
         map: { mappings: '' },
       };
     },
