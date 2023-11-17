@@ -56,7 +56,7 @@ export function vanillaExtractPlugin({
         env.command === 'serve' ? ['@vanilla-extract/css/injectStyles'] : [];
 
       compiler = createCompiler({
-        root: config.root,
+        root: _userConfig.root || process.cwd(),
         identifiers,
         cssImportSpecifier: (filePath: string) =>
           // not sure about the config.build.ssr
