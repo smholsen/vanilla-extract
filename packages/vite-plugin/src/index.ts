@@ -1,4 +1,4 @@
-import path from 'path';
+// import path from 'path';
 
 import type { Plugin, ResolvedConfig, ViteDevServer } from 'vite';
 import { normalizePath } from 'vite';
@@ -39,8 +39,8 @@ export function vanillaExtractPlugin({
     : !!process.env.VITE_RSC_BUILD;
   let packageName: string;
 
-  const getAbsoluteVirtualFileId = (source: string) =>
-    normalizePath(path.join(config.root, source));
+  // const getAbsoluteVirtualFileId = (source: string) =>
+  //   normalizePath(path.join(config.root, source));
 
   return {
     name: 'vanilla-extract',
@@ -54,6 +54,22 @@ export function vanillaExtractPlugin({
     config(_userConfig, env) {
       const include =
         env.command === 'serve' ? ['@vanilla-extract/css/injectStyles'] : [];
+
+      compiler = createCompiler({
+        root: config.root,
+        identifiers,
+        cssImportSpecifier: (filePath: string) =>
+          // not sure about the config.build.ssr
+          `${filePath}${
+            config.command === 'build' ||
+            (config.build.ssr && resolvedEmitCssInSsr)
+              ? virtualExtCss
+              : virtualExtJs
+          }`,
+
+        // TODO: Eventually pass through vite plugins, but filter out VE plugin so we don't
+        // infinitely recurse
+      });
 
       return {
         optimizeDeps: { include },
@@ -69,22 +85,6 @@ export function vanillaExtractPlugin({
     async configResolved(resolvedConfig) {
       config = resolvedConfig;
       packageName = getPackageInfo(config.root).name;
-
-      compiler = createCompiler({
-        root: resolvedConfig.root,
-        identifiers,
-        cssImportSpecifier: (filePath: string) =>
-          // not sure about the config.build.ssr
-          `${filePath}${
-            config.command === 'build' ||
-            (config.build.ssr && resolvedEmitCssInSsr)
-              ? virtualExtCss
-              : virtualExtJs
-          }`,
-
-        // TODO: Eventually pass through vite plugins, but filter out VE plugin so we don't
-        // infinitely recurse
-      });
 
       if (config.command === 'serve') {
         postCssConfig = await resolvePostcssConfig(config);
